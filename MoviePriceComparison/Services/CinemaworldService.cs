@@ -50,11 +50,14 @@
 using MoviePriceComparison.Interface;
 using MoviePriceComparison.Model;
 using System.Text.Json;
+using Polly;
+using Polly.Retry;
 
 public class CinemaWorldService : ICinemaWorldService
 {
     private readonly HttpClient _httpClient;
     private readonly IConfiguration _configuration;
+    private readonly AsyncRetryPolicy _retryPolicy;
 
     public CinemaWorldService(HttpClient httpClient, IConfiguration configuration)
     {
@@ -62,11 +65,17 @@ public class CinemaWorldService : ICinemaWorldService
         _configuration = configuration;
         _httpClient.BaseAddress = new Uri(_configuration["MovieApi:BaseUrl"]);
         _httpClient.DefaultRequestHeaders.Add("x-access-token", _configuration["MovieApi:ApiToken"]);
+        _retryPolicy = Policy
+                   .Handle<HttpRequestException>()
+                   .Or<TaskCanceledException>()
+                   .WaitAndRetryAsync(3, retryAttempt => TimeSpan.FromMilliseconds(500 * retryAttempt));
     }
 
     public async Task<List<MovieSummary>> GetMoviesAsync()
     {
-        try
+        return await _retryPolicy.ExecuteAsync(async () =>
+        {
+            try
         {
             var response = await _httpClient.GetAsync("cinemaworld/movies");
             response.EnsureSuccessStatusCode();
@@ -85,12 +94,15 @@ public class CinemaWorldService : ICinemaWorldService
             Console.WriteLine($"CinemaWorldService.GetMoviesAsync failed: {ex.Message}");
             return new List<MovieSummary>(); // Return empty list to allow app to continue
         }
-        
+        });
+
     }
 
     public async Task<MovieDetail> GetMovieDetailAsync(string id)
     {
-        var response = await _httpClient.GetAsync($"cinemaworld/movie/{id}");
+        return await _retryPolicy.ExecuteAsync(async () =>
+        {
+            var response = await _httpClient.GetAsync($"cinemaworld/movie/{id}");
         response.EnsureSuccessStatusCode();
 
         var content = await response.Content.ReadAsStringAsync();
@@ -105,5 +117,6 @@ public class CinemaWorldService : ICinemaWorldService
         }
 
         return result;
+    });
     }
 }

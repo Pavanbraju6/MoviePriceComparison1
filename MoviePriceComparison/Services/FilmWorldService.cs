@@ -1,6 +1,9 @@
 ﻿using MoviePriceComparison.Interface;
 using MoviePriceComparison.Model;
+using Polly;
 using System.Text.Json;
+using Polly;
+using Polly.Retry;
 
 namespace MoviePriceComparison.Services
 {
@@ -8,6 +11,7 @@ namespace MoviePriceComparison.Services
     {
         private readonly HttpClient _httpClient;
         private readonly IConfiguration _configuration;
+        private readonly AsyncRetryPolicy _retryPolicy;
 
         public FilmWorldService(HttpClient httpClient, IConfiguration configuration)
         {
@@ -15,11 +19,18 @@ namespace MoviePriceComparison.Services
             _configuration = configuration;
             _httpClient.BaseAddress = new Uri(_configuration["MovieApi:BaseUrl"]);
             _httpClient.DefaultRequestHeaders.Add("x-access-token", _configuration["MovieApi:ApiToken"]);
+            // Initialize Polly retry policy
+            _retryPolicy = Policy
+                .Handle<HttpRequestException>()
+                .Or<TaskCanceledException>()
+                .WaitAndRetryAsync(3, retryAttempt => TimeSpan.FromMilliseconds(500 * retryAttempt));
         }
 
         public async Task<List<MovieSummary>> GetMoviesAsync()
         {
-            var response = await _httpClient.GetAsync("filmworld/movies");
+            return await _retryPolicy.ExecuteAsync(async () =>
+            {
+                var response = await _httpClient.GetAsync("filmworld/movies");
             response.EnsureSuccessStatusCode();
 
             var content = await response.Content.ReadAsStringAsync();
@@ -29,25 +40,29 @@ namespace MoviePriceComparison.Services
             });
 
             return result?.Movies ?? new List<MovieSummary>();
+            });
         }
 
         public async Task<MovieDetail> GetMovieDetailAsync(string id)
         {
-            var response = await _httpClient.GetAsync($"filmworld/movie/{id}");
-            response.EnsureSuccessStatusCode();
-
-            var content = await response.Content.ReadAsStringAsync();
-            var result = JsonSerializer.Deserialize<MovieDetail>(content, new JsonSerializerOptions
+            return await _retryPolicy.ExecuteAsync(async () =>
             {
-                PropertyNameCaseInsensitive = true
+                    var response = await _httpClient.GetAsync($"filmworld/movie/{id}");
+                response.EnsureSuccessStatusCode();
+
+                var content = await response.Content.ReadAsStringAsync();
+                var result = JsonSerializer.Deserialize<MovieDetail>(content, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+
+                if (result != null)
+                {
+                    result.Provider = "Filmworld";
+                }
+
+                return result;
             });
-
-            if (result != null)
-            {
-                result.Provider = "Filmworld";
-            }
-
-            return result;
         }
     }
 
